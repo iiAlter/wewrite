@@ -17,31 +17,7 @@ Usage as module:
     path = generate_image("prompt text", "output.png", size="cover")
 """
 
-import abc
-import argparse
-import json
-import sys
-from pathlib import Path
-
-import requests
-import yaml
-
-# --- Config ---
-
-CONFIG_PATHS = [
-    Path.cwd() / "config.yaml",
-    Path(__file__).parent.parent / "config.yaml",  # skill root
-    Path(__file__).parent / "config.yaml",          # toolkit dir
-    Path.home() / ".config" / "wewrite" / "config.yaml",
-]
-
-
-def _load_config() -> dict:
-    for p in CONFIG_PATHS:
-        if p.exists():
-            with open(p, "r", encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-    return {}
+from config import load_config
 
 
 # --- Size presets ---
@@ -330,7 +306,7 @@ def generate_image(
         The output file path.
     """
     if config is None:
-        config = _load_config()
+        config = load_config()
 
     provider = _build_provider(config)
     resolved_size = provider.resolve_size(size)
@@ -366,7 +342,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        config = _load_config()
+        config = load_config()
         if args.provider:
             config.setdefault("image", {})["provider"] = args.provider
         path = generate_image(args.prompt, args.output, size=args.size, config=config)

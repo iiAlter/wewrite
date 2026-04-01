@@ -59,7 +59,7 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 
 **降级方案 1**：如果 TrendRadar MCP 不可用（服务未启动），使用原始热点爬虫：
 ```bash
-{skill_dir}/.venv/bin/python3 {skill_dir}/scripts/fetch_hotspots.py --limit 30
+{skill_dir}/toolkit/run.py {skill_dir}/scripts/fetch_hotspots.py --limit 30
 ```
 
 **降级方案 2**：如果以上都失败，用 WebSearch 搜索 "今日热点 {topics中的第一个垂类}"。
@@ -79,7 +79,7 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 然后对热点中的关键词做 SEO 评分：
 
 ```bash
-{skill_dir}/.venv/bin/python3 {skill_dir}/scripts/seo_keywords.py --json {从热点标题中提取的3-5个关键词}
+{skill_dir}/toolkit/run.py {skill_dir}/scripts/seo_keywords.py --json {从热点标题中提取的3-5个关键词}
 ```
 
 脚本返回每个关键词的 SEO 评分（0-10）和相关关键词，用于 Step 3 的 SEO 友好度评估。
@@ -181,13 +181,13 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 
 ```bash
 # 封面（2.35:1 微信封面比例）
-{skill_dir}/.venv/bin/python3 {skill_dir}/toolkit/image_gen.py \
+{skill_dir}/toolkit/run.py {skill_dir}/toolkit/image_gen.py \
   --prompt "{封面提示词}" \
   --output {skill_dir}/output/{client}/{date}-cover.png \
   --size cover
 
 # 内文配图（16:9 横版）
-{skill_dir}/.venv/bin/python3 {skill_dir}/toolkit/image_gen.py \
+{skill_dir}/toolkit/run.py {skill_dir}/toolkit/image_gen.py \
   --prompt "{配图提示词}" \
   --output {skill_dir}/output/{client}/{date}-img{序号}.png \
   --size article
@@ -204,7 +204,7 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 ### Step 7: 排版 + 推送草稿
 
 ```bash
-{skill_dir}/.venv/bin/python3 {skill_dir}/toolkit/cli.py publish {markdown_path} \
+{skill_dir}/toolkit/run.py {skill_dir}/toolkit/cli.py publish {markdown_path} \
   --cover {cover_path} \
   --theme {style.yaml 的 theme} \
   --title "{最终标题}"
@@ -213,7 +213,7 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 如果有 cover 就加 `--cover`，没有就不加。
 
 **降级**：如果 publish 失败，改用 preview：
-{skill_dir}/.venv/bin/python3 {skill_dir}/toolkit/cli.py preview {markdown_path} \
+{skill_dir}/toolkit/run.py {skill_dir}/toolkit/cli.py preview {markdown_path} \
   --theme {theme} --no-open -o {output_dir}/{slug}.html
 ```
 告知用户本地 HTML 路径。
@@ -268,7 +268,7 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 当用户问"文章数据怎么样"、"效果复盘"、"看看表现"时：
 
 ```bash
-{skill_dir}/.venv/bin/python3 {skill_dir}/scripts/fetch_stats.py --client {client} --days 7
+{skill_dir}/toolkit/run.py {skill_dir}/scripts/fetch_stats.py --client {client} --days 7
 ```
 
 脚本会：
@@ -304,7 +304,7 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 用户将历史推文放入 `corpus/` 后：
 
 ```bash
-{skill_dir}/.venv/bin/python3 {skill_dir}/scripts/build_playbook.py --client {client}
+{skill_dir}/toolkit/run.py {skill_dir}/scripts/build_playbook.py --client {client}
 ```
 
 脚本输出语料统计 + 分析指令。按指令逐批阅读文章，提取风格特征，生成 `playbook.md`。
@@ -325,7 +325,7 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 ### 2. 运行 diff 分析
 
 ```bash
-{skill_dir}/.venv/bin/python3 {skill_dir}/scripts/learn_edits.py --client {client} --draft {draft_path} --final {final_path}
+{skill_dir}/toolkit/run.py {skill_dir}/scripts/learn_edits.py --client {client} --draft {draft_path} --final {final_path}
 ```
 
 ### 3. 分析并记录
@@ -346,7 +346,7 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 每积累 5 次 lessons，脚本会提示更新 playbook：
 
 ```bash
-{skill_dir}/.venv/bin/python3 {skill_dir}/scripts/learn_edits.py --client {client} --summarize
+{skill_dir}/toolkit/run.py {skill_dir}/scripts/learn_edits.py --client {client} --summarize
 ```
 
 读取所有 lessons，找出反复出现的 pattern（≥2 次），将其固化到 `playbook.md` 的对应章节。
