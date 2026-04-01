@@ -1,0 +1,43 @@
+# 文章发布历史 — Demo科技
+# 由 SKILL.md Step 7 自动维护，每次发布后追加记录
+# 选题时读取，避免重复 + 分析偏好
+
+articles: []
+
+# 每条记录格式：
+# - date: "2026-03-23"
+#   title: "文章标题"
+#   topic_source: "热点抓取"  # 热点抓取 / 用户指定
+#   topic_keywords: ["AI", "科技股"]
+#   framework: "热点解读型"
+#   word_count: 2000
+#   media_id: "xxx"
+#   stats:  # 由 fetch_stats.py 回填
+#     read_count: 0
+#     share_count: 0
+#     like_count: 0
+#     read_rate: 0  # 阅读率 = 阅读数 / 送达数
+- date: "2026-03-28"
+  title: "罗技真的凉了？我扒了财报和行业数据，发现事情没那么简单"
+  topic_source: "热点抓取"
+  topic_keywords: ["罗技", "PC外设", "财报", "AI时代"]
+  framework: "对比型"
+  word_count: 1800
+  media_id: "binQQVltpWig9H6_-_VTF4lM1Rwaa8ZUcrWeTujb5PUZDcv9ftt0A1jVPU5fzw9K"
+  stats: null
+- date: "2026-03-31"
+  title: "AI 时代，个体内容生产者的「流水线」正在悄悄成型"
+  topic_source: "用户指定"
+  topic_keywords: ["AI工具", "内容生产", "个体创业", "自动化流水线"]
+  framework: "痛点型"
+  word_count: 1434
+  media_id: "binQQVltpWig9H6_-_VTF3qCMUWZLr_yhX4yoormlJFb-dqJR6-zusdqylNne3x_"
+  stats: null
+- date: "2026-03-31"
+  title: "无人空中重卡：快递行业的「变形金刚」时刻"
+  topic_source: "热点抓取"
+  topic_keywords: ["无人机", "空中重卡", "快递", "低空经济", "顺丰", "美团"]
+  framework: "热点解读型"
+  word_count: 1434
+  media_id: "binQQVltpWig9H6_-_VTF1jaI0cZ4RYmzMmGutdPsuCyC5XwghALLQYPXrq16eMN"
+  stats: null
