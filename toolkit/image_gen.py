@@ -17,6 +17,14 @@ Usage as module:
     path = generate_image("prompt text", "output.png", size="cover")
 """
 
+import abc
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import requests
+
 from config import load_config
 
 

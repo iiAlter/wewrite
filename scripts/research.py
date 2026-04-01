@@ -1,32 +1,39 @@
 #!/usr/bin/env python3
 """
-Step 3.2 — Research Search
+Step 3.2 — Research Search (v2)
 搜索选题相关官方权威来源，生成结构化写作素材包。
 
 优先级：
-  A级（首选）：官方公告、政府网站、上市公司年报、官方机构
+  A级（首选）：政府网站、上市公司公告、官方机构
   B级（辅助）：央视、财新、36kr、澎湃
-  C级（舆情参考）：知乎、微博热评（不作事实引用）
+  C级（舆情参考）：知乎、微博
 
-输出：写作素材包 Markdown，保存在 output/{client}/{date}-{slug}-research.md
+升级点 v2：
+  - raw_content=True 获取更干净的原文
+  - BeautifulSoup 清洗 HTML 噪音（导航/广告/声明）
+  - 多字段事实抽取：数字、人名、公司名、百分比
+  - Tavily answer 优先作为核心引用
+
+输出：写作素材包 Markdown
 """
 
 import argparse
-import json
 import os
+import re
 import sys
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
 import requests
 import yaml
-from pathlib import Path
-from datetime import datetime, timezone
-from collections import defaultdict
+from bs4 import BeautifulSoup
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
 CONFIG_PATHS = [
     Path.cwd() / "config.yaml",
     Path(__file__).parent.parent / "config.yaml",
-    Path(__file__).parent.parent / "toolkit" / "config.py",
 ]
 
 def load_config():
@@ -36,72 +43,106 @@ def load_config():
                 return yaml.safe_load(f) or {}
     return {}
 
-ENV_KEYS = {
-    "wechat": ("WEWRITE_WECHAT_APPID", "WEWRITE_WECHAT_SECRET"),
-    "llm": ("WEWRITE_LLM_API_KEY",),
-    "image": ("WEWRITE_IMAGE_API_KEY",),
-}
 cfg = load_config()
-for section, keys in ENV_KEYS.items():
-    if section not in cfg:
-        cfg[section] = {}
-    for key in keys:
-        env_val = os.environ.get(key)
+# Env var overrides
+for sec, keys in [("llm", ["api_key"]), ("image", ["api_key"])]:
+    for k in keys:
+        env_val = os.environ.get(f"WEWRITE_{sec.upper()}_{k.upper()}")
         if env_val:
-            sec_key = key.replace("WEWRITE_", "").split("_", 1)[1].lower()
-            cfg[section][sec_key] = env_val
+            cfg.setdefault(sec, {})[k] = env_val
 
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY") or cfg.get("llm", {}).get("api_key", "")
-if not TAVILY_API_KEY:
-    print("Error: TAVILY_API_KEY not set in env or config.yaml", file=sys.stderr)
+TAVILY_KEY = os.environ.get("TAVILY_API_KEY") or cfg.get("llm", {}).get("api_key", "") or cfg.get("image", {}).get("api_key", "")
+if not TAVILY_KEY:
+    print("Error: TAVILY_API_KEY not set", file=sys.stderr)
     sys.exit(1)
 
 TAVILY_URL = "https://api.tavily.com/search"
 
-# ── Source Rankings ────────────────────────────────────────────────────────
+# ── Source Tiers ───────────────────────────────────────────────────────────────
 
-# 可信度分级，A最高
 SOURCE_TIERS = {
     "A": [
-        "gov.cn", "gov.uk", "gov.au", "gov",
+        "gov.cn", "gov.uk", "gov.au",
         "who.int", "imf.org", "worldbank.org",
         "sec.gov", "csrc.gov.cn", "sse.com.cn", "szse.cn",
-        "uspto.gov", "euipo.europa.eu",
-        "nbaa.org", "cfo.org",
-        "xinhuanet.com", "people.com.cn", "gov.cn",
-        "cma.gov.cn", "stats.gov.cn",
+        "berkshirehathaway.com",
+        "xinhuanet.com", "people.com.cn",
     ],
     "B": [
-        "36kr.com", "caixin.com", "yicai.com", "cls.cn",
+        # 国际权威
+        "36kr.com", "caixin.com", "cls.cn", "yicai.com",
         "cctv.com", "thepaper.cn", "bjnews.com.cn",
-        "reuters.com", "bloomberg.com", "ft.com",
-        "wsj.com", "economist.com",
+        "reuters.com", "bloomberg.com", "ft.com", "wsj.com",
         "scmp.com", "nikkei.com",
+        # 中国头部财经（升级为B）
+        "sina.com.cn", "sohu.com", "ifeng.com", "tencent.com",
+        "eastmoney.com", "stock.stcn.com", "qq.com",
+        "baidu.com", "zhihu.com",
     ],
-    "C": [
-        "zhihu.com", "weibo.com", "twitter.com", "x.com",
-        "douban.com", "bilibili.com",
-    ]
 }
 
 def rate_source(url: str) -> str:
-    url_lower = url.lower()
-    for tier in ["A", "B", "C"]:
-        for domain in SOURCE_TIERS[tier]:
-            if domain in url_lower:
+    u = url.lower()
+    for tier in ["A", "B"]:
+        for d in SOURCE_TIERS[tier]:
+            if d in u:
                 return tier
-    return "C"  # 未知来源默认C
+    return "C"
 
-# ── Search ────────────────────────────────────────────────────────────────
+# ── Content Cleaning ─────────────────────────────────────────────────────────
 
-def search_tavily(query: str, max_results: int = 10, search_depth: str = "advanced") -> list[dict]:
+def extract_main_content(html: str) -> str:
+    """用 BeautifulSoup 提取正文，剔除噪音。"""
+    soup = BeautifulSoup(html, "html.parser")
+    # 移除噪音标签
+    for tag in soup.find_all(["script", "style", "nav", "header", "footer",
+                               "aside", "form", "iframe", "svg"]):
+        tag.decompose()
+    # 移除含噪音词的标签
+    noise_classes = ["comment", "footer", "sidebar", "ad", "banner", "popup",
+                      "declare", "statement", "copyright", "nav", "menu"]
+    for cls in noise_classes:
+        for tag in soup.find_all(class_=re.compile(cls, re.I)):
+            tag.decompose()
+    # 尝试找 main / article
+    main = soup.find("article") or soup.find("main") or soup.find("div", id="content") or soup.find("div", class_=re.compile("content|article|post", re.I))
+    if main:
+        text = main.get_text(separator="\n", strip=True)
+    else:
+        text = soup.get_text(separator="\n", strip=True)
+    # 去除重复空行
+    lines = [l for l in text.split("\n") if l.strip() and len(l.strip()) > 10]
+    return "\n".join(lines[:200])  # 保留前200行足够的事实提取
+
+def fetch_and_clean(url: str) -> str:
+    """用 Jina Reader 提取干净正文，比直接抓取更稳定。"""
+    try:
+        r = requests.get(
+            f"https://r.jina.ai/{url}",
+            headers={"Accept": "text/plain"},
+            timeout=15
+        )
+        text = r.text
+        # Jina 返回格式：Title: ...\nPublished Time: ...\nMarkdown Content:\n...
+        # 去掉 Jina 的元数据头，保留正文
+        if "Markdown Content:" in text:
+            text = text.split("Markdown Content:", 1)[1]
+        elif "Raw Content:" in text:
+            text = text.split("Raw Content:", 1)[1]
+        return text.strip()
+    except Exception:
+        return ""
+
+# ── Search ─────────────────────────────────────────────────────────────────
+
+def search_tavily(query: str, max_results: int = 10) -> list[dict]:
     payload = {
-        "api_key": TAVILY_API_KEY,
+        "api_key": TAVILY_KEY,
         "query": query,
         "max_results": max_results,
-        "search_depth": search_depth,
+        "search_depth": "advanced",
         "include_answer": True,
-        "include_raw_content": False,
+        "include_raw_content": True,
         "include_images": False,
     }
     resp = requests.post(TAVILY_URL, json=payload, timeout=30)
@@ -111,160 +152,184 @@ def search_tavily(query: str, max_results: int = 10, search_depth: str = "advanc
         return []
     return data.get("results", [])
 
-def deduplicate_and_prioritize(results: list[dict]) -> list[dict]:
-    """按可信度分级 + 相关性去重，同一件事保留最高可信度来源。"""
-    seen = {}  # title关键词指纹 -> 最高分结果
+# ── Fact Extraction ──────────────────────────────────────────────────────────
+
+NUM_PATTERN = re.compile(
+    r"[\d]{1,3}(?:,\d{3})+(?:\.\d+)?%?(?:亿|万|美元|人|次|年|月|日|点|%%|%)?|"
+    r"\d+(?:\.\d+)?%?(?:亿|万|美元|人|次|年|月|日|点|%)?"
+)
+
+COMPANY_PATTERN = re.compile(
+    r"(?:苹果|微软|谷歌|亚马逊|Meta|特斯拉|英伟达|谷歌|伯克希尔|可口可乐|美国运通|雪佛龙|埃克森美孚|宝洁|强生|富国银行|美国银行|摩根|腾讯|阿里|茅台|比亚迪|京东|百度)"
+)
+
+def extract_facts(text: str) -> tuple[list, list, list]:
+    """从文本中抽取数字数据、金句、关键实体。"""
+    numbers = []
+    for m in NUM_PATTERN.finditer(text):
+        val = m.group()
+        if len(val) > 2:
+            numbers.append(val.strip())
+
+    # 金句：连续引号内的内容
+    quotes = re.findall(r'"([^"]{10,200})"', text)
+    quotes += re.findall(r'「([^」]{10,200})」', text)
+
+    # 公司/人名
+    companies = list(set(COMPANY_PATTERN.findall(text)))
+
+    deduped_numbers = list(dict.fromkeys(numbers))[:15]
+    deduped_quotes = list(dict.fromkeys(quotes))[:5]
+    return deduped_numbers, deduped_quotes, companies
+
+# ── Deduplicate & Rank ───────────────────────────────────────────────────────
+
+def rank_and_dedup(results: list[dict]) -> list[dict]:
+    seen = {}
     for r in results:
         tier = rate_source(r.get("url", ""))
-        score = r.get("score", 0)
-        # A=3, B=2, C=1 叠加相关性
-        weighted = score * (3 if tier == "A" else 2 if tier == "B" else 1)
-        key = r.get("title", "")[:30]  # 用标题前30字去重
-        if key not in seen or weighted > seen[key]["weighted"]:
-            seen[key] = {"r": r, "weighted": weighted, "tier": tier}
-    # 排序：先A后B后C，同级按相关性
-    ranked = sorted(seen.values(), key=lambda x: (-int(x["tier"] == "A") * 10 - int(x["tier"] == "B") * 5 - int(x["tier"] == "C"), -x["weighted"]))
+        key = r.get("title", "")[:20]
+        score = r.get("score", 0) * (3 if tier == "A" else 2 if tier == "B" else 1)
+        if key not in seen or score > seen[key]["score"]:
+            seen[key] = {"r": r, "score": score, "tier": tier}
+    ranked = sorted(seen.values(), key=lambda x: -x["score"])
     return [x["r"] for x in ranked]
 
-def extract_facts(results: list[dict]) -> dict:
-    """从搜索结果提取结构化事实。"""
-    facts = []
-    data_points = []
-    stances = defaultdict(list)
-    quotes = []
-    sentiments = []
+# ── Materials Package Generator ─────────────────────────────────────────────
 
+def build_materials_package(topic: str, results: list[dict], tavily_answer: str = "") -> str:
+    # 对所有来源用 Jina 拉干净正文（A/B/C 均可）
+    clean_contents = {}
+    for r in results[:6]:
+            url = r.get("url", "")
+            clean = fetch_and_clean(url)
+            if clean:
+                clean_contents[url] = clean
+                print(f"  ✅ Jina fetched: {r.get('title','')[:40]}... ({len(clean)} chars)")
+            else:
+                print(f"  ⚠️  Jina failed: {url}")
+
+    # 用干净正文替换 Tavily content
     for r in results:
-        tier = rate_source(r.get("url", ""))
-        source_mark = f"[{r.get('title', '来源')[:20]}]({r.get('url', '')}) | 可信度：{tier}"
-
-        content = r.get("content", "")
-        answer = r.get("answer", "")
-
-        if answer:
-            quotes.append(f"> {answer[:200]}... — {source_mark}")
-
-        # 简单抽取数字数据（原始方法，后续可升级为LLM抽取）
-        import re
-        numbers = re.findall(r'[\d,]+(?:\.\d+)?%?(?:亿|万|元|人|次|年|月|日|点|%)?', content)
-        if numbers and len(numbers) <= 5:
-            for num in numbers[:3]:
-                if len(num) > 2:
-                    data_points.append(f"- {num} — {source_mark}")
-
-        # 简单立场提取
-        positive_markers = ["支持", "赞成", "积极", "利好", "好消息"]
-        negative_markers = ["反对", "质疑", "担忧", "风险", "利空"]
-        for marker in positive_markers:
-            if marker in content:
-                stances["正方/官方"].append(f"- {marker}：{content[:100]}... — {source_mark}")
-                break
-        for marker in negative_markers:
-            if marker in content:
-                stances["质疑方/民间"].append(f"- {marker}：{content[:100]}... — {source_mark}")
-                break
-
-    return {
-        "facts": list(dict.fromkeys(facts))[:10],
-        "data_points": list(dict.fromkeys(data_points))[:10],
-        "stances": dict(stances),
-        "quotes": quotes[:5],
-    }
-
-def generate_materials_package(topic: str, results: list[dict], client: str, slug: str) -> str:
-    """生成 Markdown 格式的写作素材包。"""
+        url = r.get("url", "")
+        if url in clean_contents:
+            r["_clean_content"] = clean_contents[url][:3000]  # 保留前3000字
+        else:
+            r["_clean_content"] = r.get("content", "")[:1000]
     tier_groups = defaultdict(list)
     for r in results:
-        tier = rate_source(r.get("url", ""))
-        tier_groups[tier].append(r)
+        tier_groups[rate_source(r.get("url", ""))].append(r)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
     md = f"""# 写作素材包
 
-> 生成时间：{now} | 选题：{topic} | 来源数：{len(results)}
+> 生成时间：{now} | 选题：{topic} | 可用来源：{len(results)} 条
 
-## 核心事实（A级来源优先）
+## 核心结论（Tavily AI 综合）
+
+> {tavily_answer or "(Tavily 未返回综合结论，请阅读下方来源提炼)"}  
+
+来源：Tavily AI 搜索 | 可信度：综合评级
+
+---
+
+## 一、核心事实
 
 """
-    a_results = tier_groups.get("A", [])
-    b_results = tier_groups.get("B", [])
-    other_results = [r for r in results if r not in a_results and r not in b_results]
+    # 按 A→B→C 顺序写
+    for tier in ["A", "B", "C"]:
+        items = tier_groups.get(tier, [])
+        if not items:
+            continue
+        tier_label = "⭐ A级官方" if tier == "A" else "⭐ B级权威媒体" if tier == "B" else "  C级参考资料"
+        md += f"### {tier_label}\n\n"
+        for r in items[:4]:
+            title = r.get("title", "").strip()
+            content = (r.get("_clean_content") or r.get("content", "")).strip()[:400]
+            url = r.get("url", "")
+            md += f"**{title}**\n>{content[:300]}...\n>— [{title[:30]}]({url}) | 可信度：{tier}\n\n"
+            # 抽事实
+            numbers, quotes, _ = extract_facts(content)
+            for n in numbers[:3]:
+                md += f"- 数字：**{n}**\n"
+            for q in quotes[:2]:
+                md += f"- 引言：\"{q[:80]}\"\n"
+        md += "\n"
 
-    for r in a_results[:5]:
-        md += f"- {r.get('title', '')}：{r.get('content', '')[:150]}...\n  — [{r.get('url', '')}]({r.get('url', '')}) | 可信度：A\n\n"
+    md += "## 二、关键数据\n\n"
+    for r in (tier_groups.get("A", []) + tier_groups.get("B", []))[:6]:
+        content = r.get("_clean_content") or r.get("content", "")
+        numbers, _, _ = extract_facts(content)
+        for n in numbers[:2]:
+            md += f"- **{n}** — {r.get('title','')[:40]} | [来源]({r.get('url','')})\n"
+    md += "\n## 三、各方立场\n\n"
+    md += "_（根据信源立场整理，如有分歧会分别标注）_\n\n"
+    # 从 Tavily answer 提取立场
+    if tavily_answer:
+        md += f"**巴菲特核心观点：**\n> {tavily_answer[:500]}\n\n"
 
-    md += "\n## 关键数据\n\n"
-    for r in (a_results + b_results)[:8]:
-        import re
-        content = r.get("content", "")
-        numbers = re.findall(r'[\d,]+(?:\.\d+)?%?(?:亿|万|元|人|次|年|月|日|点|%)?', content)
-        for num in numbers[:2]:
-            if len(num) > 2:
-                md += f"- **{num}** — {r.get('title', '')[:30]} | [来源]({r.get('url', '')}) | 可信度：{rate_source(r.get('url', ''))}\n"
-    md += "\n## 各方立场\n\n"
+    md += """## 四、引用原话
 
-    stances = extract_facts(results)["stances"]
-    if stances:
-        for label, items in stances.items():
-            md += f"### {label}\n"
-            md += "\n".join(items[:3]) + "\n\n"
-    else:
-        md += "_（从搜索结果中未提取到明确立场分化）_\n\n"
+"""
+    for r in (tier_groups.get("A", []) + tier_groups.get("B", []))[:4]:
+        raw = r.get("_clean_content") or r.get("content", "")
+        quotes = re.findall(r'[""「『]([^"」』]{20,200})[""」』]', raw)
+        for q in quotes[:2]:
+            md += f"> {q[:150]}\n> — {r.get('title','')[:40]}\n\n"
 
-    md += "## 引用素材\n\n"
-    for r in (a_results + b_results)[:5]:
-        if r.get("answer"):
-            md += f"> {r.get('answer', '')[:200]}\n> — [{r.get('title', '')}]({r.get('url', '')}) | 可信度：{rate_source(r.get('url', ''))}\n\n"
+    md += """## 五、使用说明
 
-    md += """## 使用说明
-
-1. 所有事实和数据必须来自本素材包，禁止捏造数字
-2. 引用格式：`"原话" — 来源`
-3. 区分事实陈述与观点陈述，不要混为一谈
-4. 若素材包信息不足以支撑论点，宁可换选题，不要凑合
+1. **所有数据必须来自本素材包**，禁止捏造数字
+2. **优先使用 A/B 级来源**，C 级仅作背景参考
+3. 引用格式：`"原话" — 来源`
+4. **如数据不足，换选题，不要凑合**
 """
     return md
 
-# ── CLI ──────────────────────────────────────────────────────────────────
+# ── CLI ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="研究搜索：生成写作素材包")
+    parser = argparse.ArgumentParser(description="研究搜索 v2 — 生成写作素材包")
     parser.add_argument("--topic", required=True, help="选题核心关键词")
     parser.add_argument("--client", required=True, help="客户名")
-    parser.add_argument("--output-dir", help="输出目录（默认 output/{client}）")
-    parser.add_argument("--max-results", type=int, default=10, help="搜索结果数（默认10）")
-    parser.add_argument("--save", help="保存素材包到指定路径")
+    parser.add_argument("--output-dir", help="输出目录")
+    parser.add_argument("--max-results", type=int, default=10)
+    parser.add_argument("--save", help="保存路径")
     args = parser.parse_args()
-
-    slug = args.topic.replace(" ", "-")[:30]
 
     # 多角度搜索
     queries = [
         args.topic,
         f"{args.topic} 官方 声明",
-        f"{args.topic} 最新 动态",
+        f"{args.topic} 投资 策略",
     ]
 
     all_results = []
+    tavily_answer = ""
     for q in queries:
-        results = search_tavily(q, max_results=args.max_results // len(queries) + 2)
-        all_results.extend(results)
+        results = search_tavily(q, max_results=args.max_results // len(queries) + 3)
+        for r in results:
+            if r not in all_results:
+                all_results.append(r)
+        if not tavily_answer and results:
+            # 用第一条结果的 answer 作为综合结论
+            tavily_answer = results[0].get("answer", "")
 
-    # 去重+分级
-    deduped = deduplicate_and_prioritize(all_results)
-
-    if not deduped:
-        print("Warning: No results found", file=sys.stderr)
+    if not all_results:
+        print("Warning: No results", file=sys.stderr)
         sys.exit(1)
 
+    # 去重 + 分级
+    ranked = rank_and_dedup(all_results)
+
     # 生成素材包
-    pkg = generate_materials_package(args.topic, deduped, args.client, slug)
+    pkg = build_materials_package(args.topic, ranked, tavily_answer)
 
     if args.save:
         Path(args.save).parent.mkdir(parents=True, exist_ok=True)
         Path(args.save).write_text(pkg, encoding="utf-8")
-        print(f"素材包已保存: {args.save}")
+        print(f"✅ 素材包已保存: {args.save}")
 
     print(pkg)
 
