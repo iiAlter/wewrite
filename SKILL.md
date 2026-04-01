@@ -103,6 +103,40 @@ python3 {skill_dir}/../trendradar-content/trendradar_content.py --date {今天YY
 
 ---
 
+### Step 3.2: 研究搜索（核心新增）
+
+> 这一步是整个 pipeline 最重要的改进。在写作之前，必须先有真实信源作为素材。
+
+**目标**：基于选题，搜索官方/权威来源，生成结构化「写作素材包」。
+
+**搜索策略（分级优先）**：
+- A级（首选）：政府网站、上市公司公告、官方机构（WHO/央行/统计局）
+- B级（辅助）：央视、财新、36kr、澎湃
+- C级（舆情参考，仅作情绪参考）：知乎热评、微博热评
+
+**禁止**：直接用 AI 知识库填充事实、捏造数据。
+
+```bash
+python3 {skill_dir}/scripts/research.py \
+  --topic "{选题核心关键词}" \
+  --client {client} \
+  --max-results 10 \
+  --save {skill_dir}/output/{client}/{date}-{slug}-research.md
+```
+
+脚本输出：
+- 核心事实（A级来源优先标注）
+- 关键数据（带来源）
+- 各方立场/反应
+- 金句引用素材
+
+**注入写作 prompt**：
+> "你是一名编辑。先读素材包（output/{client}/{date}-{slug}-research.md）。所有事实必须来自素材包，禁止捏造数字或编造来源。引用格式：'原话' — 来源。"
+
+如果搜索结果不足 3 条有效来源（A/B级），标注警告并建议换选题。
+
+---
+
 ### Step 3.5: 框架选择
 
 ```
