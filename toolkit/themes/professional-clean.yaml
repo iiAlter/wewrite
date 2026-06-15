@@ -65,7 +65,7 @@ base_css: |
     font-size: 16px;
     line-height: 1.8;
     color: #333333;
-    margin: 12px 0;
+    margin-top: 12px;
   }
 
   strong {
@@ -122,12 +122,12 @@ base_css: |
 
   ul {
     padding-left: 24px;
-    margin: 12px 0;
+    margin-top: 12px;
   }
 
   ol {
     padding-left: 24px;
-    margin: 12px 0;
+    margin-top: 12px;
   }
 
   li {
